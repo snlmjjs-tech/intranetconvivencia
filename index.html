@@ -570,10 +570,10 @@ const usaAlmacenNube = (typeof window.storage !== "undefined" && window.storage 
 // Esos valores son públicos; la seguridad la dan las reglas de firebase/firestore.rules.
 // Si apiKey queda vacío, la app funciona como antes (localStorage, sin cuentas).
 const FIREBASE_CONFIG = {
-  apiKey: "",
-  authDomain: "",
-  projectId: "",
-  appId: ""
+  apiKey: "AIzaSyDnnDvnhvMTTzFewOxP2aYjt4OToFHlmVI",
+  authDomain: "convivenciaescolar-9ce15.firebaseapp.com",
+  projectId: "convivenciaescolar-9ce15",
+  appId: "1:1039222633267:web:ee38ea7b4dd1b354014446"
 };
 const usaFirebase = !usaAlmacenNube && !!FIREBASE_CONFIG.apiKey && typeof window.firebase !== "undefined";
 let auth = null, db = null;
