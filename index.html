@@ -3,7 +3,24 @@
 <head>
 <meta charset="UTF-8" />
 <title>Plataforma de Derivación a Convivencia Escolar</title>
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2.45.4/dist/umd/supabase.min.js"></script>
 <style>
+  #authOverlay{ position:fixed; inset:0; z-index:9999; background:var(--fondo); display:none; align-items:center; justify-content:center; padding:16px; }
+  #authOverlay .auth-box{ background:#fff; border:1px solid var(--gris-linea); border-radius:var(--radio); padding:26px; width:100%; max-width:400px; box-shadow:0 6px 24px rgba(0,0,0,.08); }
+  #authOverlay h2{ margin:0 0 4px; color:var(--azul); font-size:18px; }
+  #authOverlay p.sub{ margin:0 0 16px; font-size:12.5px; }
+  #authOverlay label{ display:block; font-size:12px; margin:10px 0 3px; font-weight:600; }
+  #authOverlay input{ width:100%; padding:9px 10px; border:1px solid var(--gris-linea); border-radius:var(--radio); font-size:14px; }
+  #authOverlay .auth-tabs{ display:flex; gap:6px; margin-bottom:6px; }
+  #authOverlay .auth-tabs button{ flex:1; padding:8px; border:1px solid var(--gris-linea); background:#fff; border-radius:var(--radio); cursor:pointer; color:var(--azul); }
+  #authOverlay .auth-tabs button.active{ background:var(--azul); color:#fff; border-color:var(--azul); }
+  #authOverlay .auth-accion{ width:100%; margin-top:16px; padding:10px; background:var(--azul); color:#fff; border:0; border-radius:var(--radio); font-size:14px; cursor:pointer; }
+  #authOverlay .auth-accion:disabled{ opacity:.6; cursor:default; }
+  #authOverlay .auth-msg{ margin-top:12px; font-size:12.5px; }
+  #authOverlay .auth-msg.error{ color:var(--rojo); }
+  #authOverlay .auth-msg.ok{ color:var(--ok); }
+  #userChip{ display:none; align-items:center; gap:8px; font-size:12px; color:#fff; }
+  #userChip button{ border:1px solid rgba(255,255,255,0.4); background:transparent; color:#fff; border-radius:var(--radio); padding:4px 8px; cursor:pointer; font-size:12px; }
   :root{
     --azul: #1F2A44;
     --azul-2: #2E3E63;
@@ -231,10 +248,50 @@ header.app .brand{ display:flex; align-items:center; gap:12px; }
     <button id="tabEquipoBtn" onclick="mostrarTab('equipo')" style="display:none;">Mis casos asignados</button>
     <button class="ghost" style="border-color:rgba(255,255,255,0.4); color:#fff;" onclick="accederPanelConvivencia()">🔒 Encargado(a) Convivencia</button>
     <button class="ghost" style="border-color:rgba(255,255,255,0.4); color:#fff;" onclick="accederPanelEquipo()">🔒 Equipo de Convivencia</button>
+    <button id="tabFuncionariosBtn" onclick="mostrarTab('funcionarios')" style="display:none;">👥 Funcionarios</button>
+    <span id="userChip"><span id="userChipTxt"></span><button onclick="cerrarSesion()">Cerrar sesión</button></span>
   </nav>
 </header>
 
+<div id="authOverlay">
+  <div class="auth-box">
+    <h2>Plataforma de Convivencia Escolar</h2>
+    <p class="sub">Acceso para funcionarios</p>
+    <div id="authFormWrap">
+      <div class="auth-tabs">
+        <button id="authTabIngresar" class="active" onclick="authModo('ingresar')">Ingresar</button>
+        <button id="authTabRegistro" onclick="authModo('registro')">Crear cuenta</button>
+      </div>
+      <div id="authCamposRegistro" style="display:none;">
+        <label for="authNombre">Nombre completo</label>
+        <input id="authNombre" type="text" autocomplete="name">
+        <label for="authCargo">Cargo</label>
+        <input id="authCargo" type="text" placeholder="Ej: Profesor(a) jefe, Inspector(a)">
+      </div>
+      <label for="authEmail">Correo</label>
+      <input id="authEmail" type="email" autocomplete="email">
+      <label for="authClave">Contraseña</label>
+      <input id="authClave" type="password" autocomplete="current-password">
+      <button id="authBtn" class="auth-accion" onclick="authEnviar()">Ingresar</button>
+    </div>
+    <div id="authPendiente" style="display:none;">
+      <p>Tu cuenta fue creada y está <b>pendiente de aprobación</b> por el Encargado(a) de Convivencia. Podrás ingresar cuando sea aprobada.</p>
+      <button class="auth-accion" onclick="cerrarSesion()">Volver</button>
+    </div>
+    <div id="authMsg" class="auth-msg"></div>
+  </div>
+</div>
+
 <main>
+
+  <!-- ============ TAB: FUNCIONARIOS (solo administrador) ============ -->
+  <section id="tabFuncionarios" style="display:none;">
+    <div class="card">
+      <h2>Cuentas de funcionarios</h2>
+      <p style="font-size:12.5px; margin-top:0;">Aprueba las cuentas nuevas y define quién es administrador.</p>
+      <div id="listaFuncionarios" style="overflow-x:auto;"></div>
+    </div>
+  </section>
 
   <!-- ============ TAB: NUEVA DERIVACIÓN ============ -->
   <section id="tabNueva">
@@ -506,10 +563,26 @@ header.app .brand{ display:flex; align-items:center; gap:12px; }
 // que igualmente funcione sin errores.
 const usaAlmacenNube = (typeof window.storage !== "undefined" && window.storage !== null);
 
+// ---------- Supabase (cuentas de funcionarios + registros compartidos) ----------
+// Completa estos dos valores con los de tu proyecto (Project Settings > API).
+// La clave "anon" es pública; la seguridad la dan las políticas RLS de supabase/schema.sql.
+// Si quedan vacíos, la app funciona como antes (localStorage, sin cuentas).
+const SUPABASE_URL = "";
+const SUPABASE_ANON_KEY = "";
+const sb = (!usaAlmacenNube && SUPABASE_URL && SUPABASE_ANON_KEY && window.supabase)
+  ? window.supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY) : null;
+const usaSupabase = !!sb;
+let perfilActual = null; // { id, nombre, cargo, aprobado, es_admin }
+
 async function storageGet(key){
   if (usaAlmacenNube){
     try{ return await window.storage.get(key, true); }
     catch(e){ return null; }
+  }
+  if (usaSupabase){
+    const { data, error } = await sb.from("kv").select("key,value").eq("key", key).maybeSingle();
+    if (error) { console.error(error); return null; }
+    return data ? { key: data.key, value: data.value, shared: true } : null;
   }
   const raw = localStorage.getItem(key);
   return raw !== null ? { key, value: raw, shared: true } : null;
@@ -519,6 +592,11 @@ async function storageSet(key, value){
   if (usaAlmacenNube){
     try{ return await window.storage.set(key, value, true); }
     catch(e){ return null; }
+  }
+  if (usaSupabase){
+    const { error } = await sb.from("kv").upsert({ key, value, actualizado: new Date().toISOString() });
+    if (error) { console.error(error); return null; }
+    return { key, value, shared: true };
   }
   try{
     localStorage.setItem(key, value);
@@ -530,6 +608,11 @@ async function storageList(prefix){
   if (usaAlmacenNube){
     try{ return await window.storage.list(prefix, true); }
     catch(e){ return { keys: [] }; }
+  }
+  if (usaSupabase){
+    const { data, error } = await sb.from("kv").select("key").like("key", prefix + "%").range(0, 9999);
+    if (error) { console.error(error); return { keys: [] }; }
+    return { keys: data.map(r => r.key) };
   }
   const keys = Object.keys(localStorage).filter(k => k.startsWith(prefix));
   return { keys };
@@ -571,10 +654,134 @@ document.addEventListener("DOMContentLoaded", async () => {
   pintarMotivos();
   agregarFila();
   agregarFila();
+  if (usaSupabase) await iniciarAuth(); else await iniciarApp();
+});
+
+async function iniciarApp(){
   await cargarNombreColegio();
   await cargarInsignia();
   await cargarRegistro();
-});
+  prefillFuncionario();
+}
+
+// ---------- Cuentas de funcionarios ----------
+let authModoActual = "ingresar";
+
+function authMensaje(texto, tipo){
+  const el = document.getElementById("authMsg");
+  el.className = "auth-msg " + (tipo || "");
+  el.textContent = texto || "";
+}
+
+function authModo(modo){
+  authModoActual = modo;
+  document.getElementById("authTabIngresar").classList.toggle("active", modo === "ingresar");
+  document.getElementById("authTabRegistro").classList.toggle("active", modo === "registro");
+  document.getElementById("authCamposRegistro").style.display = modo === "registro" ? "block" : "none";
+  document.getElementById("authBtn").textContent = modo === "registro" ? "Crear cuenta" : "Ingresar";
+  document.getElementById("authClave").autocomplete = modo === "registro" ? "new-password" : "current-password";
+  authMensaje("");
+}
+
+function mostrarAuth(pendiente){
+  document.getElementById("authOverlay").style.display = "flex";
+  document.getElementById("authFormWrap").style.display = pendiente ? "none" : "block";
+  document.getElementById("authPendiente").style.display = pendiente ? "block" : "none";
+}
+
+async function iniciarAuth(){
+  document.getElementById("authClave").addEventListener("keydown", e => { if (e.key === "Enter") authEnviar(); });
+  const { data } = await sb.auth.getSession();
+  await aplicarSesion(data.session);
+}
+
+async function aplicarSesion(session){
+  perfilActual = null;
+  document.getElementById("userChip").style.display = "none";
+  document.getElementById("tabFuncionariosBtn").style.display = "none";
+  if (!session){ mostrarAuth(false); return; }
+
+  const { data: perfil, error } = await sb.from("profiles").select("*").eq("id", session.user.id).maybeSingle();
+  if (error || !perfil){
+    mostrarAuth(false);
+    authMensaje("No se pudo cargar tu perfil. Intenta nuevamente.", "error");
+    await sb.auth.signOut();
+    return;
+  }
+  if (!perfil.aprobado){ mostrarAuth(true); return; }
+
+  perfilActual = perfil;
+  document.getElementById("authOverlay").style.display = "none";
+  document.getElementById("userChipTxt").textContent = perfil.nombre + (perfil.es_admin ? " (admin)" : "");
+  document.getElementById("userChip").style.display = "inline-flex";
+  document.getElementById("tabFuncionariosBtn").style.display = perfil.es_admin ? "" : "none";
+  await iniciarApp();
+}
+
+async function authEnviar(){
+  const email = document.getElementById("authEmail").value.trim();
+  const clave = document.getElementById("authClave").value;
+  if (!email || !clave){ authMensaje("Ingresa correo y contraseña.", "error"); return; }
+  const btn = document.getElementById("authBtn");
+  btn.disabled = true; authMensaje("");
+  try{
+    if (authModoActual === "registro"){
+      const nombre = document.getElementById("authNombre").value.trim();
+      const cargo = document.getElementById("authCargo").value.trim();
+      if (!nombre){ authMensaje("Ingresa tu nombre completo.", "error"); return; }
+      if (clave.length < 8){ authMensaje("La contraseña debe tener al menos 8 caracteres.", "error"); return; }
+      const { data, error } = await sb.auth.signUp({ email, password: clave, options: { data: { nombre, cargo } } });
+      if (error){ authMensaje(error.message, "error"); return; }
+      if (data.session){ await aplicarSesion(data.session); }
+      else { authModo("ingresar"); authMensaje("Cuenta creada. Si se te pide, confirma tu correo; luego el Encargado(a) deberá aprobar tu acceso.", "ok"); }
+    } else {
+      const { data, error } = await sb.auth.signInWithPassword({ email, password: clave });
+      if (error){ authMensaje("Correo o contraseña incorrectos.", "error"); return; }
+      document.getElementById("authClave").value = "";
+      await aplicarSesion(data.session);
+    }
+  } finally { btn.disabled = false; }
+}
+
+async function cerrarSesion(){
+  await sb.auth.signOut();
+  location.reload();
+}
+
+function prefillFuncionario(){
+  if (!perfilActual) return;
+  const pr = document.getElementById("fProfesor");
+  if (pr && !pr.value) pr.value = perfilActual.nombre;
+  const en = document.getElementById("atEntrevistador");
+  if (en && !en.value) en.value = perfilActual.nombre;
+  const ca = document.getElementById("atCargoEntrevistador");
+  if (ca && !ca.value && perfilActual.cargo) ca.value = perfilActual.cargo;
+}
+
+function datosCreador(){
+  return perfilActual ? { creadoPorId: perfilActual.id, creadoPorNombre: perfilActual.nombre } : {};
+}
+
+async function cargarFuncionarios(){
+  const cont = document.getElementById("listaFuncionarios");
+  const { data, error } = await sb.from("profiles").select("*").order("creado", { ascending: false });
+  if (error){ cont.textContent = "No se pudo cargar la lista."; return; }
+  cont.innerHTML = `<table class="registro"><thead><tr><th>Nombre</th><th>Cargo</th><th>Correo</th><th>Estado</th><th>Admin</th></tr></thead><tbody>${
+    data.map(f => {
+      const yo = f.id === perfilActual.id;
+      return `<tr>
+        <td>${escapeHtml(f.nombre)}</td><td>${escapeHtml(f.cargo)}</td><td>${escapeHtml(f.email)}</td>
+        <td><label><input type="checkbox" data-id="${escapeHtml(f.id)}" data-campo="aprobado" ${f.aprobado ? "checked" : ""} ${yo ? "disabled" : ""}> Aprobado</label></td>
+        <td><label><input type="checkbox" data-id="${escapeHtml(f.id)}" data-campo="es_admin" ${f.es_admin ? "checked" : ""} ${yo ? "disabled" : ""}> Admin</label></td>
+      </tr>`;
+    }).join("")}</tbody></table>`;
+  cont.querySelectorAll("input[data-id]").forEach(chk => {
+    chk.addEventListener("change", async () => {
+      const { error } = await sb.from("profiles").update({ [chk.dataset.campo]: chk.checked }).eq("id", chk.dataset.id);
+      if (error){ alert("No se pudo actualizar la cuenta."); chk.checked = !chk.checked; }
+    });
+  });
+}
 
 document.getElementById("nombreColegio").addEventListener("change", async (e) => {
   await storageSet("config:colegio", e.target.value);
@@ -628,6 +835,9 @@ function mostrarTab(tab){
   document.getElementById("tabEstado").style.display = tab === "estado" ? "block" : "none";
   document.getElementById("tabEquipo").style.display = tab === "equipo" ? "block" : "none";
   document.getElementById("tabAtencion").style.display = tab === "atencion" ? "block" : "none";
+  document.getElementById("tabFuncionarios").style.display = tab === "funcionarios" ? "block" : "none";
+  document.getElementById("tabFuncionariosBtn").classList.toggle("active", tab === "funcionarios");
+  if (tab === "funcionarios" && usaSupabase) cargarFuncionarios();
   document.getElementById("tabAtencionBtn").classList.toggle("active", tab === "atencion");
   document.getElementById("tabNuevaBtn").classList.toggle("active", tab === "nueva");
   document.getElementById("tabRegistroBtn").classList.toggle("active", tab === "registro");
@@ -661,6 +871,7 @@ function limpiarFormulario(){
   document.getElementById("filasDetalle").innerHTML = "";
   agregarFila(); agregarFila();
   document.getElementById("mensajeForm").innerHTML = "";
+  prefillFuncionario();
 }
 
 function mostrarMensaje(texto, tipo){
@@ -671,6 +882,11 @@ function mostrarMensaje(texto, tipo){
 async function obtenerSiguienteFolioGenerico(contadorBase, prefijo){
   const anio = new Date().getFullYear();
   const clave = contadorBase + "_" + anio;
+  if (usaSupabase){
+    const { data, error } = await sb.rpc("siguiente_folio", { clave });
+    if (error || !data) throw new Error("No se pudo reservar el número de folio.");
+    return { numero: data, texto: `${prefijo}-${anio}-${String(data).padStart(4,"0")}` };
+  }
   const r = await storageGet(clave);
   const actual = (r && r.value) ? parseInt(r.value, 10) : 0;
   const siguiente = (isNaN(actual) ? 0 : actual) + 1;
@@ -732,7 +948,8 @@ async function generarDerivacion(){
       detalle: detalle,
       urgencia: document.querySelector('input[name="urgencia"]:checked').value,
       observaciones: document.getElementById("fObservaciones").value.trim(),
-      creado: new Date().toISOString()
+      creado: new Date().toISOString(),
+      ...datosCreador()
     };
 
     const key = "derivacion:" + new Date().getFullYear() + "_" + String(folio.numero).padStart(6,"0");
@@ -1673,7 +1890,8 @@ async function guardarAtencion(){
       entrevistador,
       cargoEntrevistador: v("atCargoEntrevistador"),
       otroParticipante: v("atOtroParticipante"),
-      creado: new Date().toISOString()
+      creado: new Date().toISOString(),
+      ...datosCreador()
     };
 
     const key = "atencion:" + new Date().getFullYear() + "_" + String(folio.numero).padStart(6,"0");
