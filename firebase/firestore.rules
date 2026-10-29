@@ -1,0 +1,36 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    function perfilExiste() {
+      return exists(/databases/$(database)/documents/profiles/$(request.auth.uid));
+    }
+    function perfil() {
+      return get(/databases/$(database)/documents/profiles/$(request.auth.uid)).data;
+    }
+    function aprobado() {
+      return request.auth != null && perfilExiste() && perfil().aprobado == true;
+    }
+    function admin() {
+      return aprobado() && perfil().es_admin == true;
+    }
+
+    // Cada persona crea su propio perfil, siempre pendiente y sin permisos de admin.
+    // Solo un administrador aprobado puede aprobar cuentas o dar permisos.
+    match /profiles/{uid} {
+      allow read: if request.auth != null && (request.auth.uid == uid || admin());
+      allow create: if request.auth != null && request.auth.uid == uid
+                    && request.resource.data.aprobado == false
+                    && request.resource.data.es_admin == false;
+      allow update: if admin();
+      allow delete: if false;
+    }
+
+    // Derivaciones, atenciones, contadores de folio y configuración.
+    // Solo funcionarios aprobados; nadie borra registros desde la app.
+    match /kv/{key} {
+      allow read, create, update: if aprobado();
+      allow delete: if false;
+    }
+  }
+}
