@@ -3,7 +3,9 @@
 <head>
 <meta charset="UTF-8" />
 <title>Plataforma de Derivación a Convivencia Escolar</title>
-<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2.45.4/dist/umd/supabase.min.js"></script>
+<script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-app-compat.js"></script>
+<script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-auth-compat.js"></script>
+<script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore-compat.js"></script>
 <style>
   #authOverlay{ position:fixed; inset:0; z-index:9999; background:var(--fondo); display:none; align-items:center; justify-content:center; padding:16px; }
   #authOverlay .auth-box{ background:#fff; border:1px solid var(--gris-linea); border-radius:var(--radio); padding:26px; width:100%; max-width:400px; box-shadow:0 6px 24px rgba(0,0,0,.08); }
@@ -563,15 +565,23 @@ header.app .brand{ display:flex; align-items:center; gap:12px; }
 // que igualmente funcione sin errores.
 const usaAlmacenNube = (typeof window.storage !== "undefined" && window.storage !== null);
 
-// ---------- Supabase (cuentas de funcionarios + registros compartidos) ----------
-// Completa estos dos valores con los de tu proyecto (Project Settings > API).
-// La clave "anon" es pública; la seguridad la dan las políticas RLS de supabase/schema.sql.
-// Si quedan vacíos, la app funciona como antes (localStorage, sin cuentas).
-const SUPABASE_URL = "";
-const SUPABASE_ANON_KEY = "";
-const sb = (!usaAlmacenNube && SUPABASE_URL && SUPABASE_ANON_KEY && window.supabase)
-  ? window.supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY) : null;
-const usaSupabase = !!sb;
+// ---------- Firebase (cuentas de funcionarios + registros compartidos) ----------
+// Pega aquí la configuración de tu app web (Firebase Console > Configuración del proyecto > Tus apps).
+// Esos valores son públicos; la seguridad la dan las reglas de firebase/firestore.rules.
+// Si apiKey queda vacío, la app funciona como antes (localStorage, sin cuentas).
+const FIREBASE_CONFIG = {
+  apiKey: "",
+  authDomain: "",
+  projectId: "",
+  appId: ""
+};
+const usaFirebase = !usaAlmacenNube && !!FIREBASE_CONFIG.apiKey && typeof window.firebase !== "undefined";
+let auth = null, db = null;
+if (usaFirebase){
+  firebase.initializeApp(FIREBASE_CONFIG);
+  auth = firebase.auth();
+  db = firebase.firestore();
+}
 let perfilActual = null; // { id, nombre, cargo, aprobado, es_admin }
 
 async function storageGet(key){
@@ -579,10 +589,11 @@ async function storageGet(key){
     try{ return await window.storage.get(key, true); }
     catch(e){ return null; }
   }
-  if (usaSupabase){
-    const { data, error } = await sb.from("kv").select("key,value").eq("key", key).maybeSingle();
-    if (error) { console.error(error); return null; }
-    return data ? { key: data.key, value: data.value, shared: true } : null;
+  if (usaFirebase){
+    try{
+      const d = await db.collection("kv").doc(key).get();
+      return d.exists ? { key, value: d.data().value, shared: true } : null;
+    }catch(e){ console.error(e); return null; }
   }
   const raw = localStorage.getItem(key);
   return raw !== null ? { key, value: raw, shared: true } : null;
@@ -593,10 +604,11 @@ async function storageSet(key, value){
     try{ return await window.storage.set(key, value, true); }
     catch(e){ return null; }
   }
-  if (usaSupabase){
-    const { error } = await sb.from("kv").upsert({ key, value, actualizado: new Date().toISOString() });
-    if (error) { console.error(error); return null; }
-    return { key, value, shared: true };
+  if (usaFirebase){
+    try{
+      await db.collection("kv").doc(key).set({ value, actualizado: firebase.firestore.FieldValue.serverTimestamp() }, { merge: true });
+      return { key, value, shared: true };
+    }catch(e){ console.error(e); return null; }
   }
   try{
     localStorage.setItem(key, value);
@@ -609,10 +621,12 @@ async function storageList(prefix){
     try{ return await window.storage.list(prefix, true); }
     catch(e){ return { keys: [] }; }
   }
-  if (usaSupabase){
-    const { data, error } = await sb.from("kv").select("key").like("key", prefix + "%").range(0, 9999);
-    if (error) { console.error(error); return { keys: [] }; }
-    return { keys: data.map(r => r.key) };
+  if (usaFirebase){
+    try{
+      const id = firebase.firestore.FieldPath.documentId();
+      const snap = await db.collection("kv").where(id, ">=", prefix).where(id, "<", prefix + "\uf8ff").get();
+      return { keys: snap.docs.map(d => d.id) };
+    }catch(e){ console.error(e); return { keys: [] }; }
   }
   const keys = Object.keys(localStorage).filter(k => k.startsWith(prefix));
   return { keys };
@@ -654,7 +668,7 @@ document.addEventListener("DOMContentLoaded", async () => {
   pintarMotivos();
   agregarFila();
   agregarFila();
-  if (usaSupabase) await iniciarAuth(); else await iniciarApp();
+  if (usaFirebase) await iniciarAuth(); else await iniciarApp();
 });
 
 async function iniciarApp(){
@@ -691,21 +705,25 @@ function mostrarAuth(pendiente){
 
 async function iniciarAuth(){
   document.getElementById("authClave").addEventListener("keydown", e => { if (e.key === "Enter") authEnviar(); });
-  const { data } = await sb.auth.getSession();
-  await aplicarSesion(data.session);
+  const user = await new Promise(res => { const un = auth.onAuthStateChanged(u => { un(); res(u); }); });
+  await aplicarSesion(user);
 }
 
-async function aplicarSesion(session){
+async function aplicarSesion(user){
   perfilActual = null;
   document.getElementById("userChip").style.display = "none";
   document.getElementById("tabFuncionariosBtn").style.display = "none";
-  if (!session){ mostrarAuth(false); return; }
+  if (!user){ mostrarAuth(false); return; }
 
-  const { data: perfil, error } = await sb.from("profiles").select("*").eq("id", session.user.id).maybeSingle();
-  if (error || !perfil){
+  let perfil = null;
+  try{
+    const d = await db.collection("profiles").doc(user.uid).get();
+    perfil = d.exists ? { id: d.id, ...d.data() } : null;
+  }catch(e){ console.error(e); }
+  if (!perfil){
     mostrarAuth(false);
     authMensaje("No se pudo cargar tu perfil. Intenta nuevamente.", "error");
-    await sb.auth.signOut();
+    await auth.signOut();
     return;
   }
   if (!perfil.aprobado){ mostrarAuth(true); return; }
@@ -716,6 +734,16 @@ async function aplicarSesion(session){
   document.getElementById("userChip").style.display = "inline-flex";
   document.getElementById("tabFuncionariosBtn").style.display = perfil.es_admin ? "" : "none";
   await iniciarApp();
+}
+
+function mensajeErrorAuth(e){
+  const m = {
+    "auth/email-already-in-use": "Ese correo ya tiene una cuenta.",
+    "auth/invalid-email": "El correo no es válido.",
+    "auth/weak-password": "La contraseña debe tener al menos 8 caracteres.",
+    "auth/too-many-requests": "Demasiados intentos. Espera unos minutos."
+  };
+  return m[e.code] || "Correo o contraseña incorrectos.";
 }
 
 async function authEnviar(){
@@ -730,21 +758,25 @@ async function authEnviar(){
       const cargo = document.getElementById("authCargo").value.trim();
       if (!nombre){ authMensaje("Ingresa tu nombre completo.", "error"); return; }
       if (clave.length < 8){ authMensaje("La contraseña debe tener al menos 8 caracteres.", "error"); return; }
-      const { data, error } = await sb.auth.signUp({ email, password: clave, options: { data: { nombre, cargo } } });
-      if (error){ authMensaje(error.message, "error"); return; }
-      if (data.session){ await aplicarSesion(data.session); }
-      else { authModo("ingresar"); authMensaje("Cuenta creada. Si se te pide, confirma tu correo; luego el Encargado(a) deberá aprobar tu acceso.", "ok"); }
+      const cred = await auth.createUserWithEmailAndPassword(email, clave);
+      await db.collection("profiles").doc(cred.user.uid).set({
+        nombre, cargo, email, aprobado: false, es_admin: false,
+        creado: firebase.firestore.FieldValue.serverTimestamp()
+      });
+      await aplicarSesion(cred.user);
     } else {
-      const { data, error } = await sb.auth.signInWithPassword({ email, password: clave });
-      if (error){ authMensaje("Correo o contraseña incorrectos.", "error"); return; }
+      const cred = await auth.signInWithEmailAndPassword(email, clave);
       document.getElementById("authClave").value = "";
-      await aplicarSesion(data.session);
+      await aplicarSesion(cred.user);
     }
-  } finally { btn.disabled = false; }
+  }catch(e){
+    console.error(e);
+    authMensaje(mensajeErrorAuth(e), "error");
+  }finally{ btn.disabled = false; }
 }
 
 async function cerrarSesion(){
-  await sb.auth.signOut();
+  await auth.signOut();
   location.reload();
 }
 
@@ -764,10 +796,13 @@ function datosCreador(){
 
 async function cargarFuncionarios(){
   const cont = document.getElementById("listaFuncionarios");
-  const { data, error } = await sb.from("profiles").select("*").order("creado", { ascending: false });
-  if (error){ cont.textContent = "No se pudo cargar la lista."; return; }
+  let lista = [];
+  try{
+    const snap = await db.collection("profiles").get();
+    lista = snap.docs.map(d => ({ id: d.id, ...d.data() })).sort((a, b) => (a.nombre || "").localeCompare(b.nombre || ""));
+  }catch(e){ console.error(e); cont.textContent = "No se pudo cargar la lista."; return; }
   cont.innerHTML = `<table class="registro"><thead><tr><th>Nombre</th><th>Cargo</th><th>Correo</th><th>Estado</th><th>Admin</th></tr></thead><tbody>${
-    data.map(f => {
+    lista.map(f => {
       const yo = f.id === perfilActual.id;
       return `<tr>
         <td>${escapeHtml(f.nombre)}</td><td>${escapeHtml(f.cargo)}</td><td>${escapeHtml(f.email)}</td>
@@ -777,8 +812,9 @@ async function cargarFuncionarios(){
     }).join("")}</tbody></table>`;
   cont.querySelectorAll("input[data-id]").forEach(chk => {
     chk.addEventListener("change", async () => {
-      const { error } = await sb.from("profiles").update({ [chk.dataset.campo]: chk.checked }).eq("id", chk.dataset.id);
-      if (error){ alert("No se pudo actualizar la cuenta."); chk.checked = !chk.checked; }
+      try{
+        await db.collection("profiles").doc(chk.dataset.id).update({ [chk.dataset.campo]: chk.checked });
+      }catch(e){ console.error(e); alert("No se pudo actualizar la cuenta."); chk.checked = !chk.checked; }
     });
   });
 }
@@ -837,7 +873,7 @@ function mostrarTab(tab){
   document.getElementById("tabAtencion").style.display = tab === "atencion" ? "block" : "none";
   document.getElementById("tabFuncionarios").style.display = tab === "funcionarios" ? "block" : "none";
   document.getElementById("tabFuncionariosBtn").classList.toggle("active", tab === "funcionarios");
-  if (tab === "funcionarios" && usaSupabase) cargarFuncionarios();
+  if (tab === "funcionarios" && usaFirebase) cargarFuncionarios();
   document.getElementById("tabAtencionBtn").classList.toggle("active", tab === "atencion");
   document.getElementById("tabNuevaBtn").classList.toggle("active", tab === "nueva");
   document.getElementById("tabRegistroBtn").classList.toggle("active", tab === "registro");
@@ -882,10 +918,15 @@ function mostrarMensaje(texto, tipo){
 async function obtenerSiguienteFolioGenerico(contadorBase, prefijo){
   const anio = new Date().getFullYear();
   const clave = contadorBase + "_" + anio;
-  if (usaSupabase){
-    const { data, error } = await sb.rpc("siguiente_folio", { clave });
-    if (error || !data) throw new Error("No se pudo reservar el número de folio.");
-    return { numero: data, texto: `${prefijo}-${anio}-${String(data).padStart(4,"0")}` };
+  if (usaFirebase){
+    const ref = db.collection("kv").doc(clave);
+    const numero = await db.runTransaction(async t => {
+      const d = await t.get(ref);
+      const n = (d.exists ? parseInt(d.data().value, 10) || 0 : 0) + 1;
+      t.set(ref, { value: String(n), actualizado: firebase.firestore.FieldValue.serverTimestamp() });
+      return n;
+    });
+    return { numero, texto: `${prefijo}-${anio}-${String(numero).padStart(4,"0")}` };
   }
   const r = await storageGet(clave);
   const actual = (r && r.value) ? parseInt(r.value, 10) : 0;
