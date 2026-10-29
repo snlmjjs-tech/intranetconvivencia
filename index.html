@@ -260,24 +260,15 @@ header.app .brand{ display:flex; align-items:center; gap:12px; }
     <h2>Plataforma de Convivencia Escolar</h2>
     <p class="sub">Acceso para funcionarios</p>
     <div id="authFormWrap">
-      <div class="auth-tabs">
-        <button id="authTabIngresar" class="active" onclick="authModo('ingresar')">Ingresar</button>
-        <button id="authTabRegistro" onclick="authModo('registro')">Crear cuenta</button>
-      </div>
-      <div id="authCamposRegistro" style="display:none;">
-        <label for="authNombre">Nombre completo</label>
-        <input id="authNombre" type="text" autocomplete="name">
-        <label for="authCargo">Cargo</label>
-        <input id="authCargo" type="text" placeholder="Ej: Profesor(a) jefe, Inspector(a)">
-      </div>
       <label for="authEmail">Correo</label>
       <input id="authEmail" type="email" autocomplete="email">
       <label for="authClave">Contraseña</label>
       <input id="authClave" type="password" autocomplete="current-password">
       <button id="authBtn" class="auth-accion" onclick="authEnviar()">Ingresar</button>
+      <p class="sub" style="margin-top:14px;">¿No tienes acceso? Solicítalo al Encargado(a) de Convivencia.</p>
     </div>
     <div id="authPendiente" style="display:none;">
-      <p>Tu cuenta fue creada y está <b>pendiente de aprobación</b> por el Encargado(a) de Convivencia. Podrás ingresar cuando sea aprobada.</p>
+      <p>Tu cuenta aún está <b>pendiente de aprobación</b> por el Encargado(a) de Convivencia. Podrás ingresar cuando sea aprobada.</p>
       <button class="auth-accion" onclick="cerrarSesion()">Volver</button>
     </div>
     <div id="authMsg" class="auth-msg"></div>
@@ -679,22 +670,10 @@ async function iniciarApp(){
 }
 
 // ---------- Cuentas de funcionarios ----------
-let authModoActual = "ingresar";
-
 function authMensaje(texto, tipo){
   const el = document.getElementById("authMsg");
   el.className = "auth-msg " + (tipo || "");
   el.textContent = texto || "";
-}
-
-function authModo(modo){
-  authModoActual = modo;
-  document.getElementById("authTabIngresar").classList.toggle("active", modo === "ingresar");
-  document.getElementById("authTabRegistro").classList.toggle("active", modo === "registro");
-  document.getElementById("authCamposRegistro").style.display = modo === "registro" ? "block" : "none";
-  document.getElementById("authBtn").textContent = modo === "registro" ? "Crear cuenta" : "Ingresar";
-  document.getElementById("authClave").autocomplete = modo === "registro" ? "new-password" : "current-password";
-  authMensaje("");
 }
 
 function mostrarAuth(pendiente){
@@ -717,8 +696,17 @@ async function aplicarSesion(user){
 
   let perfil = null;
   try{
-    const d = await db.collection("profiles").doc(user.uid).get();
-    perfil = d.exists ? { id: d.id, ...d.data() } : null;
+    const ref = db.collection("profiles").doc(user.uid);
+    const d = await ref.get();
+    if (d.exists){
+      perfil = { id: d.id, ...d.data() };
+    } else {
+      // Primer ingreso de una cuenta creada en Firebase: queda pendiente hasta que un admin la apruebe.
+      const nuevo = { nombre: (user.email || "").split("@")[0], cargo: "", email: user.email || "",
+        aprobado: false, es_admin: false, creado: firebase.firestore.FieldValue.serverTimestamp() };
+      await ref.set(nuevo);
+      perfil = { id: user.uid, ...nuevo };
+    }
   }catch(e){ console.error(e); }
   if (!perfil){
     mostrarAuth(false);
@@ -738,9 +726,7 @@ async function aplicarSesion(user){
 
 function mensajeErrorAuth(e){
   const m = {
-    "auth/email-already-in-use": "Ese correo ya tiene una cuenta.",
     "auth/invalid-email": "El correo no es válido.",
-    "auth/weak-password": "La contraseña debe tener al menos 8 caracteres.",
     "auth/too-many-requests": "Demasiados intentos. Espera unos minutos."
   };
   return m[e.code] || "Correo o contraseña incorrectos.";
@@ -753,22 +739,9 @@ async function authEnviar(){
   const btn = document.getElementById("authBtn");
   btn.disabled = true; authMensaje("");
   try{
-    if (authModoActual === "registro"){
-      const nombre = document.getElementById("authNombre").value.trim();
-      const cargo = document.getElementById("authCargo").value.trim();
-      if (!nombre){ authMensaje("Ingresa tu nombre completo.", "error"); return; }
-      if (clave.length < 8){ authMensaje("La contraseña debe tener al menos 8 caracteres.", "error"); return; }
-      const cred = await auth.createUserWithEmailAndPassword(email, clave);
-      await db.collection("profiles").doc(cred.user.uid).set({
-        nombre, cargo, email, aprobado: false, es_admin: false,
-        creado: firebase.firestore.FieldValue.serverTimestamp()
-      });
-      await aplicarSesion(cred.user);
-    } else {
-      const cred = await auth.signInWithEmailAndPassword(email, clave);
-      document.getElementById("authClave").value = "";
-      await aplicarSesion(cred.user);
-    }
+    const cred = await auth.signInWithEmailAndPassword(email, clave);
+    document.getElementById("authClave").value = "";
+    await aplicarSesion(cred.user);
   }catch(e){
     console.error(e);
     authMensaje(mensajeErrorAuth(e), "error");
@@ -801,15 +774,29 @@ async function cargarFuncionarios(){
     const snap = await db.collection("profiles").get();
     lista = snap.docs.map(d => ({ id: d.id, ...d.data() })).sort((a, b) => (a.nombre || "").localeCompare(b.nombre || ""));
   }catch(e){ console.error(e); cont.textContent = "No se pudo cargar la lista."; return; }
-  cont.innerHTML = `<table class="registro"><thead><tr><th>Nombre</th><th>Cargo</th><th>Correo</th><th>Estado</th><th>Admin</th></tr></thead><tbody>${
+  cont.innerHTML = `<table class="registro"><thead><tr><th>Nombre</th><th>Cargo</th><th>Correo</th><th>Estado</th><th>Admin</th><th></th></tr></thead><tbody>${
     lista.map(f => {
       const yo = f.id === perfilActual.id;
       return `<tr>
         <td>${escapeHtml(f.nombre)}</td><td>${escapeHtml(f.cargo)}</td><td>${escapeHtml(f.email)}</td>
         <td><label><input type="checkbox" data-id="${escapeHtml(f.id)}" data-campo="aprobado" ${f.aprobado ? "checked" : ""} ${yo ? "disabled" : ""}> Aprobado</label></td>
         <td><label><input type="checkbox" data-id="${escapeHtml(f.id)}" data-campo="es_admin" ${f.es_admin ? "checked" : ""} ${yo ? "disabled" : ""}> Admin</label></td>
+        <td><button class="link-btn" data-editar="${escapeHtml(f.id)}">Editar nombre/cargo</button></td>
       </tr>`;
     }).join("")}</tbody></table>`;
+  cont.querySelectorAll("button[data-editar]").forEach(btn => {
+    btn.addEventListener("click", async () => {
+      const f = lista.find(x => x.id === btn.dataset.editar);
+      const nombre = prompt("Nombre completo:", f.nombre || "");
+      if (nombre === null || !nombre.trim()) return;
+      const cargo = prompt("Cargo:", f.cargo || "");
+      if (cargo === null) return;
+      try{
+        await db.collection("profiles").doc(f.id).update({ nombre: nombre.trim(), cargo: cargo.trim() });
+        if (f.id === perfilActual.id) location.reload(); else cargarFuncionarios();
+      }catch(e){ console.error(e); alert("No se pudo actualizar la cuenta."); }
+    });
+  });
   cont.querySelectorAll("input[data-id]").forEach(chk => {
     chk.addEventListener("change", async () => {
       try{
